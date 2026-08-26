@@ -57,7 +57,8 @@ pub async fn mirror_repo(config: &AppConfig, repo: &RepoRef) -> Result<MirrorRes
     let start = Instant::now();
 
     let http_client = Client::new();
-    let s3_ops = Arc::new(S3Ops::new(config.aws_region.as_deref()).await?);
+    let s3_ops =
+        Arc::new(S3Ops::new(config.aws_region.as_deref(), config.s3_endpoint.as_deref()).await?);
 
     let token = config.hf_token.as_deref();
 
@@ -254,7 +255,7 @@ pub async fn pull_repo(
 ) -> Result<PullResult, Hfs3Error> {
     let start = Instant::now();
 
-    let s3_ops = S3Ops::new(config.aws_region.as_deref()).await?;
+    let s3_ops = S3Ops::new(config.aws_region.as_deref(), config.s3_endpoint.as_deref()).await?;
     let repo_type_str = repo.repo_type.to_string();
     let s3_prefix = config.s3_prefix_for(&repo_type_str, &repo.repo_id);
 
@@ -367,6 +368,7 @@ mod tests {
             s3_prefix: "hfs3-mirror".to_string(),
             hf_token: None,
             aws_region: None,
+            s3_endpoint: None,
         };
         let repo = RepoRef {
             repo_id: "meta-llama/Llama-2-7b".to_string(),

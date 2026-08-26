@@ -45,11 +45,16 @@ pub struct S3Ops {
 }
 
 impl S3Ops {
-    /// Create a new S3Ops from AWS config, with an optional region override.
-    pub async fn new(region: Option<&str>) -> Result<Self, Hfs3Error> {
+    /// Create a new S3Ops from AWS config, with optional region and
+    /// endpoint overrides (endpoint for S3-compatible servers such as
+    /// a local MinIO).
+    pub async fn new(region: Option<&str>, endpoint: Option<&str>) -> Result<Self, Hfs3Error> {
         let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
         if let Some(r) = region {
             config_loader = config_loader.region(aws_config::Region::new(r.to_owned()));
+        }
+        if let Some(e) = endpoint {
+            config_loader = config_loader.endpoint_url(e.to_owned());
         }
         let sdk_config = config_loader.load().await;
         let client = S3Client::new(&sdk_config);
