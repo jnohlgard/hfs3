@@ -300,6 +300,7 @@ impl S3Ops {
 
                     Ok((pn, completed, part_len))
                 });
+                part_number += 1;
             }
 
             // Drain all remaining in-flight parts
