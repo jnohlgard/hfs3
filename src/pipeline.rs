@@ -29,10 +29,7 @@ async fn resolve_repo_type(
     if repo.repo_type == RepoType::Model {
         match detect_repo_type(client, &repo.repo_id, &repo.revision, token).await {
             Ok(detected) if detected != repo.repo_type => {
-                eprintln!(
-                    "Auto-detected repo type: {} (was assumed model)",
-                    detected
-                );
+                eprintln!("Auto-detected repo type: {} (was assumed model)", detected);
                 return Ok(RepoRef {
                     repo_id: repo.repo_id.clone(),
                     repo_type: detected,

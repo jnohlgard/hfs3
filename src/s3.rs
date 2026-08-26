@@ -183,9 +183,7 @@ impl S3Ops {
                 // from finished parts without waiting for backpressure.
                 while let Some(join_result) = in_flight.try_join_next() {
                     let (pnum, part, bytes) = join_result
-                        .map_err(|e| {
-                            Hfs3Error::S3(format!("part upload task panicked: {e}"))
-                        })??;
+                        .map_err(|e| Hfs3Error::S3(format!("part upload task panicked: {e}")))??;
                     completed_parts.push((pnum, part));
                     total_bytes += bytes;
                     on_part_uploaded(bytes);
@@ -195,10 +193,9 @@ impl S3Ops {
                     // If at capacity, wait for one in-flight part to complete
                     while in_flight.len() >= max_in_flight {
                         if let Some(join_result) = in_flight.join_next().await {
-                            let (pnum, part, bytes) = join_result
-                                .map_err(|e| {
-                                    Hfs3Error::S3(format!("part upload task panicked: {e}"))
-                                })??;
+                            let (pnum, part, bytes) = join_result.map_err(|e| {
+                                Hfs3Error::S3(format!("part upload task panicked: {e}"))
+                            })??;
                             completed_parts.push((pnum, part));
                             total_bytes += bytes;
                             on_part_uploaded(bytes);
@@ -236,10 +233,8 @@ impl S3Ops {
                             .ok_or_else(|| Hfs3Error::S3(format!("no ETag for part {pn}")))?
                             .to_string();
 
-                        let completed = CompletedPart::builder()
-                            .e_tag(etag)
-                            .part_number(pn)
-                            .build();
+                        let completed =
+                            CompletedPart::builder().e_tag(etag).part_number(pn).build();
 
                         Ok((pn, completed, part_len))
                     });
@@ -286,10 +281,7 @@ impl S3Ops {
                         .ok_or_else(|| Hfs3Error::S3(format!("no ETag for part {pn}")))?
                         .to_string();
 
-                    let completed = CompletedPart::builder()
-                        .e_tag(etag)
-                        .part_number(pn)
-                        .build();
+                    let completed = CompletedPart::builder().e_tag(etag).part_number(pn).build();
 
                     Ok((pn, completed, part_len))
                 });

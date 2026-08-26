@@ -576,7 +576,10 @@ mod tests {
         let guard = stats.begin_file(0);
         assert_eq!(stats.active_workers.load(Ordering::Relaxed), 1);
         assert_eq!(stats.peak_workers.load(Ordering::Relaxed), 1);
-        assert_eq!(stats.file_progress[0].state.load(Ordering::Relaxed), FILE_ACTIVE);
+        assert_eq!(
+            stats.file_progress[0].state.load(Ordering::Relaxed),
+            FILE_ACTIVE
+        );
 
         guard.complete();
         assert_eq!(stats.active_workers.load(Ordering::Relaxed), 0);
@@ -759,7 +762,7 @@ mod tests {
 
         let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
             Ok(Bytes::from(vec![0u8; 100])),
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "test error")),
+            Err(std::io::Error::other("test error")),
             Ok(Bytes::from(vec![0u8; 200])),
         ];
         let inner = stream::iter(chunks);

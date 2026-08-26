@@ -269,15 +269,10 @@ mod tests {
                 .await;
 
             let client = Client::new();
-            let result = detect_repo_type_with_base(
-                &client,
-                &server.uri(),
-                "org/some-model",
-                "main",
-                None,
-            )
-            .await
-            .unwrap();
+            let result =
+                detect_repo_type_with_base(&client, &server.uri(), "org/some-model", "main", None)
+                    .await
+                    .unwrap();
 
             assert_eq!(result, RepoType::Model);
         }
@@ -301,15 +296,10 @@ mod tests {
                 .await;
 
             let client = Client::new();
-            let result = detect_repo_type_with_base(
-                &client,
-                &server.uri(),
-                "user/my-app",
-                "main",
-                None,
-            )
-            .await
-            .unwrap();
+            let result =
+                detect_repo_type_with_base(&client, &server.uri(), "user/my-app", "main", None)
+                    .await
+                    .unwrap();
 
             assert_eq!(result, RepoType::Space);
         }
@@ -380,7 +370,10 @@ mod tests {
 
             Mock::given(method("HEAD"))
                 .and(path_regex(r"/api/models/.+"))
-                .and(wiremock::matchers::header("Authorization", "Bearer secret-tok"))
+                .and(wiremock::matchers::header(
+                    "Authorization",
+                    "Bearer secret-tok",
+                ))
                 .respond_with(ResponseTemplate::new(200))
                 .mount(&server)
                 .await;
@@ -406,14 +399,9 @@ mod tests {
             assert_eq!(result, RepoType::Model);
 
             // Without token → all 404
-            let result = detect_repo_type_with_base(
-                &client,
-                &server.uri(),
-                "org/gated-model",
-                "main",
-                None,
-            )
-            .await;
+            let result =
+                detect_repo_type_with_base(&client, &server.uri(), "org/gated-model", "main", None)
+                    .await;
             assert!(result.is_err());
         }
 
@@ -435,15 +423,10 @@ mod tests {
                 .await;
 
             let client = Client::new();
-            let result = detect_repo_type_with_base(
-                &client,
-                &server.uri(),
-                "org/ambiguous",
-                "main",
-                None,
-            )
-            .await
-            .unwrap();
+            let result =
+                detect_repo_type_with_base(&client, &server.uri(), "org/ambiguous", "main", None)
+                    .await
+                    .unwrap();
 
             assert_eq!(result, RepoType::Model);
         }

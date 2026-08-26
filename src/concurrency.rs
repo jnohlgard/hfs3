@@ -168,8 +168,7 @@ pub fn plan_transfer_with_memory(files: &[(&str, u64)], available_memory: u64) -
     let max_file_size = files.iter().map(|(_, s)| *s).max().unwrap_or(0);
     let chunk_size = chunk_size_for_transfer(max_file_size, available_memory);
     let max_concurrent = calculate_max_concurrency(chunk_size, available_memory);
-    let max_parts =
-        calculate_max_parts(chunk_size, available_memory, files.len(), max_concurrent);
+    let max_parts = calculate_max_parts(chunk_size, available_memory, files.len(), max_concurrent);
 
     tracing::info!(
         available_memory_mb = available_memory / (1024 * 1024),
@@ -246,7 +245,7 @@ mod tests {
             ("big.bin", 500 * 1024 * 1024), // 500 MB
         ];
         let plan = plan_transfer_with_memory(&files, 1024 * 1024 * 1024); // 1 GB
-        // 1 GB RAM < 8 GB → no memory floor, uses file-size tier: 8 MB
+                                                                          // 1 GB RAM < 8 GB → no memory floor, uses file-size tier: 8 MB
         assert_eq!(plan.chunk_size, 8 * 1024 * 1024);
         assert!(plan.max_concurrent >= 2);
         assert!(plan.max_concurrent <= 32);
@@ -259,7 +258,7 @@ mod tests {
             ("huge.safetensors", 6 * 1024 * 1024 * 1024u64), // 6 GB
         ];
         let plan = plan_transfer_with_memory(&files, 32 * 1024 * 1024 * 1024); // 32 GB
-        // 32 GB RAM → memory floor 256 MB, file tier 128 MB → max = 256 MB
+                                                                               // 32 GB RAM → memory floor 256 MB, file tier 128 MB → max = 256 MB
         assert_eq!(plan.chunk_size, 256 * 1024 * 1024);
     }
 
@@ -347,7 +346,11 @@ mod tests {
         // 5 TB / 10,000 = 512 MB (rounded up to MB boundary)
         let five_tb = 5 * 1024 * GB;
         let cs = chunk_size_for_transfer(five_tb, 2 * GB);
-        assert!(cs >= 512 * MB, "chunk must be >= 512 MB for 5 TB file, got {}", cs / MB);
+        assert!(
+            cs >= 512 * MB,
+            "chunk must be >= 512 MB for 5 TB file, got {}",
+            cs / MB
+        );
     }
 
     // --- Concurrent parts tests ---
