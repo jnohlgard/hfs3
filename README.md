@@ -25,6 +25,7 @@ cp .env.example .env
 | `HFS3_S3_PREFIX` | no | `hfs3-mirror` | Key prefix within the bucket |
 | `HF_TOKEN` | no | — | HuggingFace auth token (for gated repos) |
 | `AWS_REGION` | no | — | AWS region for S3 client |
+| `HFS3_S3_ENDPOINT` | no | — | S3 endpoint URL override (e.g. a local MinIO) |
 
 AWS credentials are resolved via the standard SDK chain (env vars, `~/.aws/credentials`, IAM role, etc).
 
@@ -63,6 +64,22 @@ just example
 ```
 
 Mirrors [`hf-internal-testing/tiny-random-bert`](https://huggingface.co/hf-internal-testing/tiny-random-bert) (~1MB) to your S3 bucket.
+
+## Testing against S3
+
+Point hfs3 at any S3-compatible endpoint with `HFS3_S3_ENDPOINT` (not needed for real AWS).
+
+The `e2e` recipe is the acceptance test: it mirrors [`hf-internal-testing/tiny-random-bert`](https://huggingface.co/hf-internal-testing/tiny-random-bert) (~1MB) into a bucket, pulls it back, and sha256-compares every file against the HuggingFace original. It exits non-zero on any mismatch.
+
+Against a cluster S3 (using your ambient AWS credentials):
+
+```bash
+just e2e S3_ENDPOINT=https://s3.cluster.example:9000 E2E_BUCKET=hfs3-e2e E2E_AWS_REGION=us-east-1
+```
+
+Add `E2E_S3_USER=... E2E_S3_PASS=...` to use explicit keys instead of the ambient credential chain.
+
+On a machine with no real S3, `just s3-up` starts a throwaway MinIO on `:9000` (docker; fixed dev creds `hfs3test`/`hfs3testpassword`) and `just s3-down` stops it. The harness only needs a reachable endpoint, so a standalone MinIO server binary works just as well.
 
 ## Output
 
