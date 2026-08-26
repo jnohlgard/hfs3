@@ -53,11 +53,21 @@ impl S3Ops {
         if let Some(r) = region {
             config_loader = config_loader.region(aws_config::Region::new(r.to_owned()));
         }
+        let endpoint_set = endpoint.is_some();
         if let Some(e) = endpoint {
             config_loader = config_loader.endpoint_url(e.to_owned());
         }
         let sdk_config = config_loader.load().await;
-        let client = S3Client::new(&sdk_config);
+        // Custom endpoints (e.g. cluster S3, MinIO) generally don't resolve
+        // virtual-host subdomains, so force path-style bucket addressing.
+        let s3_config = if endpoint_set {
+            aws_sdk_s3::config::Builder::from(&sdk_config)
+                .force_path_style(true)
+                .build()
+        } else {
+            aws_sdk_s3::config::Builder::from(&sdk_config).build()
+        };
+        let client = S3Client::from_conf(s3_config);
         Ok(Self { client })
     }
 
