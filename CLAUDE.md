@@ -88,10 +88,14 @@ Six modules in `src/`, each independently testable:
   "bucket": "my-bucket",
   "prefix": "hfs3-mirror/model/meta-llama--Llama-2-7b",
   "files_transferred": 12,
+  "files_failed": 0,
   "bytes_transferred": 13456789,
+  "failed_files": [],
   "duration_secs": 45.2
 }
 ```
+
+Exit codes: 0 = success, 1 = error, 2 = `mirror` with one or more failed files (JSON is still printed).
 
 ---
 

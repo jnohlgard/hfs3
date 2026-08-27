@@ -66,7 +66,9 @@ pub struct MirrorResult {
     pub bucket: String,
     pub prefix: String,
     pub files_transferred: usize,
+    pub files_failed: usize,
     pub bytes_transferred: u64,
+    pub failed_files: Vec<String>,
     pub duration_secs: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stats: Option<TransferStatsReport>,

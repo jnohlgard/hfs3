@@ -92,10 +92,20 @@ Progress goes to stderr. A JSON summary prints to stdout on completion:
   "bucket": "my-bucket",
   "prefix": "hfs3-mirror/model/hf-internal-testing--tiny-random-bert",
   "files_transferred": 10,
+  "files_failed": 0,
   "bytes_transferred": 28183891,
+  "failed_files": [],
   "duration_secs": 8.3
 }
 ```
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Error (config, network, S3, etc.) |
+| 2 | `mirror` completed with one or more failed files (`files_failed > 0`); the JSON summary is still printed |
 
 ## S3 key layout
 

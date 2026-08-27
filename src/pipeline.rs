@@ -80,7 +80,9 @@ pub async fn mirror_repo(config: &AppConfig, repo: &RepoRef) -> Result<MirrorRes
             bucket: config.s3_bucket.clone(),
             prefix: s3_prefix,
             files_transferred: 0,
+            files_failed: 0,
             bytes_transferred: 0,
+            failed_files: Vec::new(),
             duration_secs: start.elapsed().as_secs_f64(),
             stats: None,
         });
@@ -134,10 +136,15 @@ pub async fn mirror_repo(config: &AppConfig, repo: &RepoRef) -> Result<MirrorRes
         let stats_clone = Arc::clone(&stats);
 
         let handle = tokio::spawn(async move {
-            let _permit = sem
-                .acquire()
-                .await
-                .map_err(|e| Hfs3Error::S3(format!("semaphore error: {e}")))?;
+            let _permit = match sem.acquire().await {
+                Ok(permit) => permit,
+                Err(e) => {
+                    return (
+                        file_path,
+                        Err(Hfs3Error::S3(format!("semaphore error: {e}"))),
+                    )
+                }
+            };
 
             // RAII guard: marks file active now, marks failed on drop unless completed
             let guard = stats_clone.begin_file(file_idx);
@@ -158,7 +165,7 @@ pub async fn mirror_repo(config: &AppConfig, repo: &RepoRef) -> Result<MirrorRes
                 "starting file upload",
             );
 
-            let result: Result<(String, u64), Hfs3Error> = async {
+            let result: Result<u64, Hfs3Error> = async {
                 let (stream, _content_length) =
                     download_file_stream(&client, &repo_clone, &file_path, token_owned.as_deref())
                         .await?;
@@ -182,7 +189,7 @@ pub async fn mirror_repo(config: &AppConfig, repo: &RepoRef) -> Result<MirrorRes
                     )
                     .await?;
 
-                Ok((file_path, bytes))
+                Ok(bytes)
             }
             .await;
 
@@ -191,7 +198,7 @@ pub async fn mirror_repo(config: &AppConfig, repo: &RepoRef) -> Result<MirrorRes
             }
             // On error, guard drops and marks file failed automatically
 
-            result
+            (file_path, result)
         });
 
         handles.push(handle);
@@ -199,18 +206,23 @@ pub async fn mirror_repo(config: &AppConfig, repo: &RepoRef) -> Result<MirrorRes
 
     // Collect results, tolerating individual failures
     let mut files_ok: usize = 0;
+    let mut files_failed: usize = 0;
+    let mut failed_files: Vec<String> = Vec::new();
     let mut total_bytes: u64 = 0;
 
     for handle in handles {
         match handle.await {
-            Ok(Ok((_path, bytes))) => {
+            Ok((_path, Ok(bytes))) => {
                 files_ok += 1;
                 total_bytes += bytes;
             }
-            Ok(Err(e)) => {
+            Ok((path, Err(e))) => {
+                files_failed += 1;
+                failed_files.push(path);
                 mp.println(format!("  ✗ Error: {e}")).ok();
             }
             Err(join_err) => {
+                files_failed += 1;
                 mp.println(format!("  ✗ Task panicked: {join_err}")).ok();
             }
         }
@@ -223,9 +235,9 @@ pub async fn mirror_repo(config: &AppConfig, repo: &RepoRef) -> Result<MirrorRes
     let stats_report = stats.report();
 
     eprintln!(
-        "\n✨ Mirror complete: {}/{} files, {} in {:.1}s (↓ {:.1} MB/s  ↑ {:.1} MB/s)",
-        files_ok,
+        "\n✨ Mirror complete: {files_ok}/{} files ({} failed), {} in {:.1}s (↓ {:.1} MB/s  ↑ {:.1} MB/s)",
         stats.total_files,
+        files_failed,
         crate::stats::fmt_bytes(total_bytes),
         duration,
         stats_report.download_mbps,
@@ -238,7 +250,9 @@ pub async fn mirror_repo(config: &AppConfig, repo: &RepoRef) -> Result<MirrorRes
         bucket: config.s3_bucket.clone(),
         prefix: s3_prefix,
         files_transferred: files_ok,
+        files_failed,
         bytes_transferred: total_bytes,
+        failed_files,
         duration_secs: duration,
         stats: Some(stats_report),
     })
@@ -300,7 +314,9 @@ mod tests {
             bucket: "test-bucket".to_string(),
             prefix: "hfs3-mirror/model/owner--repo".to_string(),
             files_transferred: 0,
+            files_failed: 0,
             bytes_transferred: 0,
+            failed_files: Vec::new(),
             duration_secs: 0.0,
             stats: None,
         };
@@ -315,6 +331,7 @@ mod tests {
         // Verify JSON serialization
         let json = serde_json::to_string(&result).expect("MirrorResult should serialize to JSON");
         assert!(json.contains("\"files_transferred\":0"));
+        assert!(json.contains("\"files_failed\":0"));
         assert!(json.contains("\"bytes_transferred\":0"));
         assert!(json.contains("\"repo_id\":\"owner/repo\""));
     }
@@ -347,17 +364,23 @@ mod tests {
             bucket: "prod-bucket".to_string(),
             prefix: "hfs3-mirror/dataset/user--dataset".to_string(),
             files_transferred: 5,
+            files_failed: 2,
             bytes_transferred: 1024 * 1024 * 100,
+            failed_files: vec!["a.bin".to_string(), "b.bin".to_string()],
             duration_secs: 12.5,
             stats: None,
         };
 
         assert_eq!(result.files_transferred, 5);
+        assert_eq!(result.files_failed, 2);
+        assert_eq!(result.failed_files, vec!["a.bin", "b.bin"]);
         assert_eq!(result.bytes_transferred, 104_857_600);
 
         let json = serde_json::to_string(&result).expect("should serialize");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("should parse back");
         assert_eq!(parsed["files_transferred"], 5);
+        assert_eq!(parsed["files_failed"], 2);
+        assert_eq!(parsed["failed_files"].as_array().unwrap().len(), 2);
         assert_eq!(parsed["bytes_transferred"], 104_857_600u64);
     }
 

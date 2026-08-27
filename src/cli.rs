@@ -79,6 +79,10 @@ async fn cmd_mirror(repo_str: &str) -> Result<(), Hfs3Error> {
     let json = serde_json::to_string_pretty(&result)
         .map_err(|e| Hfs3Error::Parse(format!("JSON serialization failed: {e}")))?;
     println!("{json}");
+    // Exit non-zero when some files failed so callers can detect partial mirrors.
+    if result.files_failed > 0 {
+        std::process::exit(2);
+    }
     Ok(())
 }
 
