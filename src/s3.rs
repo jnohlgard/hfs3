@@ -9,9 +9,12 @@ use aws_sdk_s3::Client as S3Client;
 use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use crate::concurrency::{plan_transfer, plan_transfer_with_memory};
 use crate::error::Hfs3Error;
 
 // Re-export chunk functions so consumers can use them via s3 module.
@@ -63,6 +66,7 @@ impl UploadParams {
 const PUT_OBJECT_THRESHOLD: u64 = 8 * 1024 * 1024; // 8 MB
 
 /// S3 operations wrapper around aws-sdk-s3 client.
+#[derive(Clone)]
 pub struct S3Ops {
     client: S3Client,
 }
@@ -534,7 +538,8 @@ impl S3Ops {
 
     /// Download all objects under a prefix to a local directory.
     ///
-    /// Strips the prefix from keys to form local paths.
+    /// Strips the prefix from keys to form local paths, and downloads files
+    /// concurrently with a memory-aware bound (same model as mirror).
     /// Returns (files_downloaded, total_bytes).
     pub async fn download_all(
         &self,
@@ -543,8 +548,6 @@ impl S3Ops {
         dest_dir: &Path,
     ) -> Result<(usize, u64), Hfs3Error> {
         let objects = self.list_objects(bucket, prefix).await?;
-        let mut files_downloaded: usize = 0;
-        let mut total_bytes: u64 = 0;
 
         // Normalize prefix for stripping (ensure trailing slash)
         let strip_prefix = if prefix.ends_with('/') {
@@ -552,6 +555,23 @@ impl S3Ops {
         } else {
             format!("{prefix}/")
         };
+
+        let plan_files: Vec<(&str, u64)> = objects.iter().map(|(k, s)| (k.as_str(), *s)).collect();
+        let plan = match plan_transfer(&plan_files) {
+            Ok(p) => p,
+            Err(_) => plan_transfer_with_memory(&plan_files, 4 * 1024 * 1024 * 1024),
+        };
+
+        let max_concurrent = plan.max_concurrent.max(1).min(plan_files.len().max(1));
+        tracing::info!(
+            prefix,
+            max_concurrent,
+            files = plan_files.len(),
+            "pull transfer plan"
+        );
+
+        let semaphore = Arc::new(Semaphore::new(max_concurrent));
+        let mut join_set = JoinSet::new();
 
         for (key, _size) in &objects {
             // Strip the prefix to get relative path
@@ -562,9 +582,33 @@ impl S3Ops {
             }
 
             let dest_path = safe_join(dest_dir, relative)?;
-            let bytes = self.download_to_file(bucket, key, &dest_path).await?;
-            total_bytes += bytes;
+
+            let s3 = self.clone();
+            let bucket = bucket.to_string();
+            let key = key.clone();
+            let sem = semaphore.clone();
+
+            join_set.spawn(async move {
+                let _permit = sem.acquire_owned().await.expect("semaphore not closed");
+                s3.download_to_file(&bucket, &key, &dest_path).await
+            });
+        }
+
+        let mut files_downloaded: usize = 0;
+        let mut total_bytes: u64 = 0;
+
+        while let Some(result) = join_set.join_next().await {
+            let bytes = match result {
+                Ok(Ok(bytes)) => bytes,
+                Ok(Err(e)) => return Err(e),
+                Err(e) => {
+                    return Err(Hfs3Error::Io(std::io::Error::other(format!(
+                        "download task panicked: {e}"
+                    ))))
+                }
+            };
             files_downloaded += 1;
+            total_bytes += bytes;
         }
 
         tracing::info!(
