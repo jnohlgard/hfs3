@@ -42,6 +42,7 @@ Rust modules in `src/`, each independently testable:
 | `HFS3_S3_PREFIX` | no | `hfs3-mirror` | Key prefix within the bucket |
 | `HF_TOKEN` | no | — | HuggingFace auth token for gated repos |
 | `AWS_REGION` | no | — | AWS region for S3 client |
+| `HFS3_MAX_CHUNK_MB` | no | — | MiB cap on multipart chunk size (clamped to S3 5 MiB part minimum and the 10,000-part floor) |
 
 ## Testing conventions
 

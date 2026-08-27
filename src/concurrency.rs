@@ -69,7 +69,20 @@ pub fn chunk_size_for_transfer(file_size: u64, available_memory: u64) -> usize {
         0
     };
 
-    base.max(mem_floor).max(s3_min)
+    let size = base.max(mem_floor);
+    // Optional operator cap (e.g. to force many small parts for testing
+    // resume behavior); never below the S3 5 MiB part minimum, and never
+    // drops below the S3 part-count floor.
+    let capped = env_chunk_cap().map_or(size, |cap| size.min(cap.max(5 * MB)));
+    capped.max(s3_min)
+}
+
+/// Optional chunk-size cap from `HFS3_MAX_CHUNK_MB` (MiB).
+fn env_chunk_cap() -> Option<usize> {
+    std::env::var("HFS3_MAX_CHUNK_MB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|mb| mb * MB)
 }
 
 /// Max concurrent S3 part uploads within a single file transfer.
@@ -427,5 +440,26 @@ mod tests {
         // 100 files, 32 concurrent → per_file budget = 16.3GB/32 ≈ 522MB
         // 522 MB / 256 MB = 2
         assert_eq!(plan.max_parts_in_flight, 2);
+    }
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn chunk_size_respects_hfs3_max_chunk_mb() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("HFS3_MAX_CHUNK_MB", "8");
+        let capped = chunk_size_for_transfer(26 * MB as u64, 49 * GB);
+        std::env::remove_var("HFS3_MAX_CHUNK_MB");
+        assert_eq!(capped, 8 * MB);
+    }
+
+    #[test]
+    fn chunk_size_cap_never_below_s3_minimums() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("HFS3_MAX_CHUNK_MB", "1");
+        // Cap below 5 MiB is clamped to the S3 part minimum
+        let got = chunk_size_for_transfer(100 * MB as u64, 49 * GB);
+        std::env::remove_var("HFS3_MAX_CHUNK_MB");
+        assert_eq!(got, 5 * MB);
     }
 }

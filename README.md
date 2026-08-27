@@ -26,6 +26,7 @@ cp .env.example .env
 | `HF_TOKEN` | no | — | HuggingFace auth token (for gated repos) |
 | `AWS_REGION` | no | — | AWS region for S3 client |
 | `HFS3_S3_ENDPOINT` | no | — | S3 endpoint URL override (e.g. a local MinIO) |
+| `HFS3_MAX_CHUNK_MB` | no | — | Cap on multipart chunk size in MiB (clamped to S3's 5 MiB part minimum and the 10,000-part-per-file floor) |
 
 AWS credentials are resolved via the standard SDK chain (env vars, `~/.aws/credentials`, IAM role, etc).
 
@@ -125,9 +126,20 @@ Example: `s3://my-bucket/hfs3-mirror/model/meta-llama--Llama-2-7b/config.json`
 
 Files under 8 MB skip multipart and use a single `PutObject`.
 
+Set `HFS3_MAX_CHUNK_MB` to cap the chunk size (useful on low-memory hosts); the effective chunk never drops below S3's 5 MiB part minimum or below what 10,000 parts would allow.
+
+## Resuming interrupted transfers
+
+If a mirror run dies mid-transfer (network drop, Ctrl-C, power loss), re-running `hfs3 mirror <repo>` picks up where it left off instead of restarting:
+
+- **Large files** (multipart): hfs3 looks up the surviving S3 multipart upload and resumes it. Parts already in S3 are skipped; the HuggingFace download restarts from the first missing part using an HTTP `Range` request (hfs3 hard-errors if the server ignores the range, since resuming from a full-body response would corrupt the object). A small manifest object `<key>.hfs3-resume.json` pins the chunk layout (file size, chunk size, upload id) so resumption works even if the memory-based chunk sizing would pick a different chunk size on the next run. The manifest is deleted once the upload completes.
+- **Small files** (single `PutObject`): uploaded atomically, so an interrupted small file simply re-uploads in full.
+- **Error handling**: transport failures (timeouts, connection drops) leave the multipart upload and manifest in place for the next run; integrity failures (size or part-layout mismatches) abort the upload and start fresh.
+- The JSON summary's `bytes_transferred` only counts bytes moved during the current run (resumed parts are excluded).
+
 ## Known Limitations
 
-- **Xet repos**: work via plain `/resolve/` URLs, but hfs3 does not use Xet's chunked-CAS protocol or resumable downloads. Very large Xet-hosted files are downloaded as plain HTTP streams.
+- **Xet repos**: work via plain `/resolve/` URLs, but hfs3 does not use Xet's chunked-CAS protocol. Very large Xet-hosted files are downloaded as plain HTTP streams (transfer resumption still works at the S3 multipart level).
 - **Custom S3 endpoints** (`HFS3_S3_ENDPOINT`): always use path-style addressing (`endpoint/bucket/key`). Endpoints that require virtual-host style (`bucket.endpoint`) are not supported.
 
 ## Development

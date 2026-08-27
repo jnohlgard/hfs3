@@ -3,6 +3,7 @@
 //! `mirror_repo` streams files from HuggingFace to S3 with memory-aware concurrency.
 //! `pull_repo` downloads all files from S3 to a local directory.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -10,10 +11,12 @@ use std::time::{Duration, Instant};
 use reqwest::Client;
 use tokio::sync::Semaphore;
 
-use crate::concurrency::{chunk_size_for_transfer, plan_transfer, plan_transfer_with_memory};
+use crate::concurrency::{
+    chunk_size_for_transfer, plan_transfer, plan_transfer_with_memory, PUT_OBJECT_THRESHOLD,
+};
 use crate::config::AppConfig;
 use crate::error::Hfs3Error;
-use crate::hf::{detect_repo_type_with_base, download_file_stream, list_repo_files, HF_BASE};
+use crate::hf::{detect_repo_type_with_base, download_file_stream_range, list_repo_files, HF_BASE};
 use crate::s3::{S3Ops, UploadParams};
 use crate::stats::{spawn_progress_reporter, CountingStream, TransferStats};
 use crate::types::{MirrorResult, PullResult, RepoRef, RepoType};
@@ -134,6 +137,25 @@ pub async fn mirror_repo(config: &AppConfig, repo: &RepoRef) -> Result<MirrorRes
     let available_memory = plan.available_memory;
     let max_parts = plan.max_parts_in_flight;
 
+    // In-flight multipart uploads left by an interrupted run: key -> upload_id.
+    // Resumable files continue where they left off instead of starting over.
+    let resume_candidates: HashMap<String, String> = match s3_ops
+        .list_incomplete_uploads(&config.s3_bucket, &s3_prefix)
+        .await
+    {
+        Ok(v) => v.into_iter().collect(),
+        Err(e) => {
+            eprintln!("Warning: could not list in-progress S3 uploads ({e}); resume disabled");
+            HashMap::new()
+        }
+    };
+    if !resume_candidates.is_empty() {
+        eprintln!(
+            "Found {} in-progress upload(s) from a previous run; will resume where possible",
+            resume_candidates.len()
+        );
+    }
+
     let mut handles = Vec::with_capacity(files.len());
 
     for (file_idx, file) in files.into_iter().enumerate() {
@@ -147,6 +169,7 @@ pub async fn mirror_repo(config: &AppConfig, repo: &RepoRef) -> Result<MirrorRes
         let repo_clone = repo.clone();
         let token_owned = config.hf_token.clone();
         let stats_clone = Arc::clone(&stats);
+        let resume_candidate = resume_candidates.get(&key).cloned();
 
         let handle = tokio::spawn(async move {
             let _permit = match sem.acquire().await {
@@ -162,26 +185,74 @@ pub async fn mirror_repo(config: &AppConfig, repo: &RepoRef) -> Result<MirrorRes
             // RAII guard: marks file active now, marks failed on drop unless completed
             let guard = stats_clone.begin_file(file_idx);
 
-            // Per-file upload params: memory-aware chunk size + concurrent parts
-            let upload_params = UploadParams {
-                chunk_size: chunk_size_for_transfer(file_size, available_memory),
-                max_parts_in_flight: max_parts,
-            };
-
-            tracing::debug!(
-                file = %file_path,
-                size = file_size,
-                chunk_mb = upload_params.chunk_size / (1024 * 1024),
-                max_parts = upload_params.max_parts_in_flight,
-                bucket = %bucket,
-                key = %key,
-                "starting file upload",
-            );
-
             let result: Result<u64, Hfs3Error> = async {
-                let (stream, _content_length) =
-                    download_file_stream(&client, &repo_clone, &file_path, token_owned.as_deref())
-                        .await?;
+                // Resolve an in-flight upload left by a previous run, if any.
+                // Small files are uploaded atomically, so an orphaned
+                // candidate just gets abandoned (it will re-upload fresh).
+                let resume = if file_size < PUT_OBJECT_THRESHOLD {
+                    if let Some(uid) = &resume_candidate {
+                        s3.abandon_upload(&bucket, &key, Some(uid)).await;
+                    }
+                    None
+                } else {
+                    match &resume_candidate {
+                        Some(uid) => s3.resolve_resume(&bucket, &key, file_size, Some(uid)).await?,
+                        None => None,
+                    }
+                };
+
+                // All parts already landed: just complete the upload.
+                if let Some(r) = resume.as_ref().filter(|r| r.is_complete()) {
+                    eprintln!(
+                        "  {file_path}: all {} parts already in S3, completing upload",
+                        r.expected_parts()
+                    );
+                    return s3.complete_from_resume(&bucket, &key, r).await;
+                }
+                if let Some(r) = resume.as_ref() {
+                    eprintln!(
+                        "  {file_path}: resuming: {}/{} parts present, skipping {} bytes already in S3",
+                        r.completed.len(),
+                        r.expected_parts(),
+                        r.skipped_bytes()
+                    );
+                }
+
+                // Per-file upload params: memory-aware chunk size + concurrent
+                // parts. A resume reuses the chunk size pinned by the manifest.
+                let upload_params = UploadParams {
+                    chunk_size: resume.as_ref().map_or(
+                        chunk_size_for_transfer(file_size, available_memory),
+                        |r| r.chunk_size,
+                    ),
+                    max_parts_in_flight: max_parts,
+                };
+
+                tracing::debug!(
+                    file = %file_path,
+                    size = file_size,
+                    chunk_mb = upload_params.chunk_size / (1024 * 1024),
+                    max_parts = upload_params.max_parts_in_flight,
+                    resumed = resume.is_some(),
+                    bucket = %bucket,
+                    key = %key,
+                    "starting file upload",
+                );
+
+                // Resume at the first missing part: the range offset matches
+                // that part's start, so the stream yields exactly the bytes
+                // still to upload.
+                let offset = resume
+                    .as_ref()
+                    .map_or(0, |r| (r.min_part_to_upload() - 1) as u64 * r.chunk_size as u64);
+                let (stream, _content_length) = download_file_stream_range(
+                    &client,
+                    &repo_clone,
+                    &file_path,
+                    token_owned.as_deref(),
+                    offset,
+                )
+                .await?;
 
                 // Wrap download stream to count bytes
                 let dl_stats = Arc::clone(&stats_clone);
@@ -198,6 +269,7 @@ pub async fn mirror_repo(config: &AppConfig, repo: &RepoRef) -> Result<MirrorRes
                         counting_stream,
                         file_size,
                         &upload_params,
+                        resume.as_ref(),
                         move |part_bytes| ul_stats.part_uploaded(file_idx, part_bytes),
                     )
                     .await?;

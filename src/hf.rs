@@ -175,16 +175,38 @@ pub async fn download_file_stream(
     ),
     Hfs3Error,
 > {
-    download_file_stream_with_base(client, HF_BASE, repo, file_path, token).await
+    download_file_stream_range(client, repo, file_path, token, 0).await
+}
+
+/// Download a file starting at a byte offset (HTTP Range request).
+/// Used to resume interrupted uploads without re-downloading completed parts.
+pub async fn download_file_stream_range(
+    client: &Client,
+    repo: &RepoRef,
+    file_path: &str,
+    token: Option<&str>,
+    range_start: u64,
+) -> Result<
+    (
+        impl Stream<Item = Result<Bytes, reqwest::Error>>,
+        Option<u64>,
+    ),
+    Hfs3Error,
+> {
+    download_file_stream_with_base(client, HF_BASE, repo, file_path, token, range_start).await
 }
 
 /// Download a file against a custom base URL (testable).
+///
+/// `range_start == 0` downloads the whole file; a larger value requests
+/// `bytes={range_start}-` and errors if the server does not honor the range.
 pub async fn download_file_stream_with_base(
     client: &Client,
     base_url: &str,
     repo: &RepoRef,
     file_path: &str,
     token: Option<&str>,
+    range_start: u64,
 ) -> Result<
     (
         impl Stream<Item = Result<Bytes, reqwest::Error>>,
@@ -198,12 +220,20 @@ pub async fn download_file_stream_with_base(
     if let Some(t) = token {
         req = req.bearer_auth(t);
     }
+    if range_start > 0 {
+        req = req.header("Range", format!("bytes={range_start}-"));
+    }
 
     let resp = req.send().await?;
 
     let status = resp.status();
     if !status.is_success() {
         return Err(hf_http_error(status, &url, repo));
+    }
+    if range_start > 0 && status.as_u16() != 206 {
+        return Err(Hfs3Error::HfApi(format!(
+            "server returned {status} instead of 206 for a Range request on {url}; cannot resume safely"
+        )));
     }
 
     let content_length = resp.content_length();
@@ -559,6 +589,7 @@ mod tests {
                 &model_repo(),
                 "config.json",
                 None,
+                0,
             )
             .await
             {
@@ -585,6 +616,7 @@ mod tests {
                 &model_repo(),
                 "config.json",
                 None,
+                0,
             )
             .await
             {
@@ -593,6 +625,74 @@ mod tests {
             };
             let msg = err.to_string();
             assert!(msg.contains("not found"), "got: {msg}");
+        }
+    }
+
+    mod range_downloads {
+        use super::*;
+        use futures::StreamExt;
+        use wiremock::matchers::header;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const DL_PATH: &str = r"/.+/resolve/main/config.json";
+
+        #[tokio::test]
+        async fn test_range_download_sends_range_header_and_streams_body() {
+            let server = MockServer::start().await;
+            Mock::given(header("Range", "bytes=8-"))
+                .and(wiremock::matchers::path_regex(DL_PATH))
+                .respond_with(ResponseTemplate::new(206).set_body_string("tail-bytes"))
+                .mount(&server)
+                .await;
+
+            let client = Client::new();
+            let (mut stream, _len) = match download_file_stream_with_base(
+                &client,
+                &server.uri(),
+                &model_repo(),
+                "config.json",
+                None,
+                8,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => panic!("range download should succeed: {e}"),
+            };
+
+            let mut body = String::new();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.expect("chunk");
+                body.push_str(std::str::from_utf8(&chunk).expect("utf8"));
+            }
+            assert_eq!(body, "tail-bytes");
+        }
+
+        #[tokio::test]
+        async fn test_range_download_rejects_server_that_ignores_range() {
+            let server = MockServer::start().await;
+            // Server ignores the Range header and returns the whole file
+            Mock::given(wiremock::matchers::path_regex(DL_PATH))
+                .respond_with(ResponseTemplate::new(200).set_body_string("whole-file"))
+                .mount(&server)
+                .await;
+
+            let client = Client::new();
+            let err = match download_file_stream_with_base(
+                &client,
+                &server.uri(),
+                &model_repo(),
+                "config.json",
+                None,
+                8,
+            )
+            .await
+            {
+                Err(e) => e,
+                Ok(_) => panic!("must not resume from a full-body response"),
+            };
+            let msg = err.to_string();
+            assert!(msg.contains("206"), "got: {msg}");
         }
     }
 }
