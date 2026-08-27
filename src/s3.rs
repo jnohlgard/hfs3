@@ -109,7 +109,7 @@ impl S3Ops {
         F: Fn(u64),
     {
         if file_size < PUT_OBJECT_THRESHOLD {
-            let bytes = self.upload_small(bucket, key, stream).await?;
+            let bytes = self.upload_small(bucket, key, stream, file_size).await?;
             on_part_uploaded(bytes);
             Ok(bytes)
         } else {
@@ -119,11 +119,15 @@ impl S3Ops {
     }
 
     /// Upload a small file using put_object (collect entire body first).
+    ///
+    /// Rejects the stream if its actual byte count differs from the listed
+    /// `file_size`, so a truncated download never lands in S3.
     async fn upload_small(
         &self,
         bucket: &str,
         key: &str,
         mut stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
+        file_size: u64,
     ) -> Result<u64, Hfs3Error> {
         let mut buf = BytesMut::new();
         while let Some(chunk) = stream.next().await {
@@ -131,6 +135,11 @@ impl S3Ops {
             buf.extend_from_slice(&chunk);
         }
         let total = buf.len() as u64;
+        if total != file_size {
+            return Err(Hfs3Error::S3(format!(
+                "size mismatch for {key}: listed {file_size} bytes, stream ended at {total}"
+            )));
+        }
         let body = ByteStream::from(buf.freeze());
 
         tracing::info!(bucket, key, bytes = total, "put_object (small file)");
@@ -157,7 +166,7 @@ impl S3Ops {
         bucket: &str,
         key: &str,
         mut stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
-        _file_size: u64,
+        file_size: u64,
         params: &UploadParams,
         on_part_uploaded: F,
     ) -> Result<u64, Hfs3Error>
@@ -310,6 +319,14 @@ impl S3Ops {
                 completed_parts.push((pnum, part));
                 total_bytes += bytes;
                 on_part_uploaded(bytes);
+            }
+
+            // Reject a stream whose actual size differs from the listed size
+            // so a truncated download never lands in S3.
+            if total_bytes != file_size {
+                return Err(Hfs3Error::S3(format!(
+                    "size mismatch for {key}: listed {file_size} bytes, uploaded {total_bytes}"
+                )));
             }
 
             Ok(())
