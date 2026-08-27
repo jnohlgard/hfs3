@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 use crate::concurrency::{chunk_size_for_transfer, plan_transfer, plan_transfer_with_memory};
 use crate::config::AppConfig;
 use crate::error::Hfs3Error;
-use crate::hf::{detect_repo_type, download_file_stream, list_repo_files};
+use crate::hf::{detect_repo_type_with_base, download_file_stream, list_repo_files, HF_BASE};
 use crate::s3::{S3Ops, UploadParams};
 use crate::stats::{spawn_progress_reporter, CountingStream, TransferStats};
 use crate::types::{MirrorResult, PullResult, RepoRef, RepoType};
@@ -25,9 +25,22 @@ async fn resolve_repo_type(
     repo: &RepoRef,
     token: Option<&str>,
 ) -> Result<RepoRef, Hfs3Error> {
+    resolve_repo_type_with_base(client, HF_BASE, repo, token).await
+}
+
+/// Same as [`resolve_repo_type`] but probes `base_url` instead of the
+/// production HF endpoint, so tests can run hermetically against a mock.
+async fn resolve_repo_type_with_base(
+    client: &Client,
+    base_url: &str,
+    repo: &RepoRef,
+    token: Option<&str>,
+) -> Result<RepoRef, Hfs3Error> {
     // Only auto-detect for bare IDs that defaulted to Model
     if repo.repo_type == RepoType::Model {
-        match detect_repo_type(client, &repo.repo_id, &repo.revision, token).await {
+        match detect_repo_type_with_base(client, base_url, &repo.repo_id, &repo.revision, token)
+            .await
+        {
             Ok(detected) if detected != repo.repo_type => {
                 eprintln!("Auto-detected repo type: {} (was assumed model)", detected);
                 return Ok(RepoRef {
@@ -438,26 +451,53 @@ mod tests {
 
         #[tokio::test]
         async fn test_resolve_falls_back_to_model_on_detection_failure() {
-            // If detection fails (e.g. network error), keep the Model default
+            // If detection fails (no probe returns 200), keep the Model default.
+            // Real HF returns 401 for unauthenticated probes of nonexistent repos.
+            let server = MockServer::start().await;
+            wiremock::Mock::given(wiremock::matchers::method("HEAD"))
+                .respond_with(wiremock::ResponseTemplate::new(401))
+                .mount(&server)
+                .await;
+
             let repo = RepoRef {
                 repo_id: "org/thing".to_string(),
                 repo_type: RepoType::Model,
                 revision: "main".to_string(),
             };
 
-            // Client pointing nowhere — all requests will fail
-            let client = Client::builder()
-                .timeout(std::time::Duration::from_millis(100))
-                .build()
+            let client = Client::new();
+            let resolved = resolve_repo_type_with_base(&client, &server.uri(), &repo, None)
+                .await
                 .unwrap();
-
-            // Start a mock server with no mocks → 404 for everything.
-            // But resolve_repo_type calls detect_repo_type which uses HF_BASE,
-            // not the mock server. The detection will fail (can't reach HF),
-            // but resolve should gracefully fall back to Model.
-            let _server = MockServer::start().await;
-            let resolved = resolve_repo_type(&client, &repo, None).await.unwrap();
             assert_eq!(resolved.repo_type, RepoType::Model);
+        }
+
+        #[tokio::test]
+        async fn test_resolve_detects_space_when_model_probe_401s() {
+            // Model probe 401s (not a model), space probe 200s -> detected as Space.
+            let server = MockServer::start().await;
+            wiremock::Mock::given(wiremock::matchers::method("HEAD"))
+                .and(wiremock::matchers::path_regex(r"/api/models/.+"))
+                .respond_with(wiremock::ResponseTemplate::new(401))
+                .mount(&server)
+                .await;
+            wiremock::Mock::given(wiremock::matchers::method("HEAD"))
+                .and(wiremock::matchers::path_regex(r"/api/spaces/.+"))
+                .respond_with(wiremock::ResponseTemplate::new(200))
+                .mount(&server)
+                .await;
+
+            let repo = RepoRef {
+                repo_id: "user/my-app".to_string(),
+                repo_type: RepoType::Model,
+                revision: "main".to_string(),
+            };
+
+            let client = Client::new();
+            let resolved = resolve_repo_type_with_base(&client, &server.uri(), &repo, None)
+                .await
+                .unwrap();
+            assert_eq!(resolved.repo_type, RepoType::Space);
         }
     }
 }

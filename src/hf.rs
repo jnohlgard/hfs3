@@ -5,7 +5,7 @@ use reqwest::Client;
 use crate::error::Hfs3Error;
 use crate::types::{HfFileEntry, RepoRef, RepoType};
 
-const HF_BASE: &str = "https://huggingface.co";
+pub const HF_BASE: &str = "https://huggingface.co";
 
 /// Build the HF tree API URL for listing repo files.
 fn api_url(repo: &RepoRef) -> String {
@@ -63,7 +63,7 @@ pub async fn detect_repo_type(
     detect_repo_type_with_base(client, HF_BASE, repo_id, revision, token).await
 }
 
-async fn detect_repo_type_with_base(
+pub async fn detect_repo_type_with_base(
     client: &Client,
     base_url: &str,
     repo_id: &str,
@@ -278,13 +278,13 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_detect_space_after_model_404() {
+        async fn test_detect_space_after_model_401() {
             let server = MockServer::start().await;
 
-            // Model → 404
+            // Model probe for a non-model repo → 401 (real HF unauth behavior)
             Mock::given(method("HEAD"))
                 .and(path_regex(r"/api/models/.+"))
-                .respond_with(ResponseTemplate::new(404))
+                .respond_with(ResponseTemplate::new(401))
                 .mount(&server)
                 .await;
 
@@ -305,18 +305,18 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_detect_dataset_after_model_and_space_404() {
+        async fn test_detect_dataset_after_model_and_space_401() {
             let server = MockServer::start().await;
 
             Mock::given(method("HEAD"))
                 .and(path_regex(r"/api/models/.+"))
-                .respond_with(ResponseTemplate::new(404))
+                .respond_with(ResponseTemplate::new(401))
                 .mount(&server)
                 .await;
 
             Mock::given(method("HEAD"))
                 .and(path_regex(r"/api/spaces/.+"))
-                .respond_with(ResponseTemplate::new(404))
+                .respond_with(ResponseTemplate::new(401))
                 .mount(&server)
                 .await;
 
@@ -341,11 +341,12 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_detect_all_404_returns_error() {
+        async fn test_detect_all_401_returns_error() {
             let server = MockServer::start().await;
 
+            // Unauthenticated probes for a nonexistent repo all return 401
             Mock::given(method("HEAD"))
-                .respond_with(ResponseTemplate::new(404))
+                .respond_with(ResponseTemplate::new(401))
                 .mount(&server)
                 .await;
 
@@ -378,9 +379,9 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            // Without the right token, fall through to 404
+            // Without the right token, fall through to 401
             Mock::given(method("HEAD"))
-                .respond_with(ResponseTemplate::new(404))
+                .respond_with(ResponseTemplate::new(401))
                 .mount(&server)
                 .await;
 
@@ -398,7 +399,7 @@ mod tests {
             .unwrap();
             assert_eq!(result, RepoType::Model);
 
-            // Without token → all 404
+            // Without token → all 401
             let result =
                 detect_repo_type_with_base(&client, &server.uri(), "org/gated-model", "main", None)
                     .await;
