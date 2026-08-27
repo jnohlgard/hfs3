@@ -7,7 +7,7 @@ All decisions were provided upfront by the user. No Q&A was needed.
 - Single binary distribution, no runtime dependencies
 - Zero-copy streaming for large model files (reqwest -> S3 multipart)
 - Memory-aware concurrency via /proc/meminfo
-- The user wants hardware-respectful tooling (see copilot-instructions.md)
+- The user wants hardware-respectful tooling
 
 ## Why HF REST API instead of huggingface_hub crate
 
