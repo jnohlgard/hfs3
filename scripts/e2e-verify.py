@@ -27,9 +27,22 @@ def main() -> int:
         print(f"error: HuggingFace returned no files for {repo}", file=sys.stderr)
         return 1
     failures = []
-    for path in files:
+    for index, path in enumerate(files, start=1):
         url = f"https://huggingface.co/{repo}/resolve/main/{urllib.parse.quote(path)}"
-        original = urllib.request.urlopen(url, timeout=300).read()
+        print(f"[{index}/{len(files)}] downloading {path} ...", flush=True)
+        original = b""
+        last_report = -1
+        with urllib.request.urlopen(url, timeout=300) as resp:
+            while True:
+                chunk = resp.read(1 << 20)
+                if not chunk:
+                    break
+                original += chunk
+                done = len(original) >> 20
+                if done > last_report:
+                    last_report = done
+                    print(f"    {last_report} MiB / {path}", file=sys.stderr, flush=True)
+        print(f"    done: {len(original)} bytes", flush=True)
         local = os.path.join(dest, path)
         if not os.path.isfile(local):
             print(f"FAIL {path}: missing locally")
