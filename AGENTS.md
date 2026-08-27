@@ -114,33 +114,9 @@ Files < 8 MB use `put_object` instead of multipart.
 - All modules take dependencies as explicit arguments for testability
 - `tests/*.py` hold the original Python behavioral spec, kept for reference (not run)
 
-## Execution Plan
+## Scope and decisions
 
-This project has a DAG-based execution plan at `spec/plan.yaml`.
-Proto contracts defining agent I/O boundaries are in `spec/contracts/`.
-To execute: read `spec/plan.yaml`, launch worker agents by level (level 0 first, in parallel),
-validate output protos at each boundary, gate on tests passing before advancing to the next level.
-
-### DAG summary
-
-```
-Level 0: A0 (scaffold), A1 (types), A2 (config), A5 (concurrency), A7 (docker)
-Level 1: A3 (hf_client), A4 (s3_client), A10 (ci)
-Level 2: A6 (pipeline)
-Level 3: A8 (cli_wiring)
-Level 4: A9 (integration_test)
-
-Critical path: A0 -> A3 -> A6 -> A8 -> A9
-```
-
-### What is NOT being built
-
-- Auth / multi-user
-- Web UI
-- Windows support
-- Caching / incremental sync
-- S3 server-side encryption configuration
-- Any Python code remaining (beyond test reference)
+Architectural decisions (why Rust, why the HF REST API, chunk sizing, concurrency model) and the out-of-scope list live in `spec/scope.md`.
 
 ## Tooling
 
