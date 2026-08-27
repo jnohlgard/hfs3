@@ -8,10 +8,6 @@ use crate::types::{HfFileEntry, RepoRef, RepoType};
 pub const HF_BASE: &str = "https://huggingface.co";
 
 /// Build the HF tree API URL for listing repo files.
-fn api_url(repo: &RepoRef) -> String {
-    api_url_with_base(HF_BASE, repo)
-}
-
 fn api_url_with_base(base: &str, repo: &RepoRef) -> String {
     let type_segment = match repo.repo_type {
         RepoType::Model => "models",
@@ -25,7 +21,7 @@ fn api_url_with_base(base: &str, repo: &RepoRef) -> String {
 }
 
 /// Build the HF resolve URL for downloading a file.
-fn download_url(repo: &RepoRef, file_path: &str) -> String {
+fn download_url_with_base(base: &str, repo: &RepoRef, file_path: &str) -> String {
     let type_prefix = match repo.repo_type {
         RepoType::Model => String::new(),
         RepoType::Dataset => "datasets/".to_string(),
@@ -33,8 +29,23 @@ fn download_url(repo: &RepoRef, file_path: &str) -> String {
     };
     format!(
         "{}/{}{}/resolve/{}/{}",
-        HF_BASE, type_prefix, repo.repo_id, repo.revision, file_path
+        base, type_prefix, repo.repo_id, repo.revision, file_path
     )
+}
+
+/// Map an HTTP status from an HF API or file request to an actionable error.
+fn hf_http_error(status: reqwest::StatusCode, url: &str, repo: &RepoRef) -> Hfs3Error {
+    match status.as_u16() {
+        401 | 403 => Hfs3Error::HfApi(format!(
+            "HF access denied ({status}) for '{}': the repo needs a token (gated/private), or it does not exist (unauthenticated HF also returns 401 for missing repos). Set HF_TOKEN to a valid HuggingFace token; if the repo ID was given bare, include the type prefix (e.g. 'datasets/owner/name' or 'spaces/owner/name') so it is looked up in the right namespace.",
+            repo.repo_id
+        )),
+        404 => Hfs3Error::HfApi(format!(
+            "HF repo not found: '{}' (GET {} returned 404)",
+            repo.repo_id, url
+        )),
+        _ => Hfs3Error::HfApi(format!("GET {} returned {}", url, status)),
+    }
 }
 
 /// JSON shape returned by the HF tree API (superset of what we need).
@@ -109,7 +120,17 @@ pub async fn list_repo_files(
     repo: &RepoRef,
     token: Option<&str>,
 ) -> Result<Vec<HfFileEntry>, Hfs3Error> {
-    let url = api_url(repo);
+    list_repo_files_with_base(client, HF_BASE, repo, token).await
+}
+
+/// List repo files against a custom base URL (testable).
+pub async fn list_repo_files_with_base(
+    client: &Client,
+    base_url: &str,
+    repo: &RepoRef,
+    token: Option<&str>,
+) -> Result<Vec<HfFileEntry>, Hfs3Error> {
+    let url = api_url_with_base(base_url, repo);
 
     let mut req = client.get(&url);
     if let Some(t) = token {
@@ -118,12 +139,9 @@ pub async fn list_repo_files(
 
     let resp = req.send().await?;
 
-    if !resp.status().is_success() {
-        return Err(Hfs3Error::HfApi(format!(
-            "GET {} returned {}",
-            url,
-            resp.status()
-        )));
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(hf_http_error(status, &url, repo));
     }
 
     let entries: Vec<HfTreeEntry> = resp.json().await?;
@@ -157,7 +175,24 @@ pub async fn download_file_stream(
     ),
     Hfs3Error,
 > {
-    let url = download_url(repo, file_path);
+    download_file_stream_with_base(client, HF_BASE, repo, file_path, token).await
+}
+
+/// Download a file against a custom base URL (testable).
+pub async fn download_file_stream_with_base(
+    client: &Client,
+    base_url: &str,
+    repo: &RepoRef,
+    file_path: &str,
+    token: Option<&str>,
+) -> Result<
+    (
+        impl Stream<Item = Result<Bytes, reqwest::Error>>,
+        Option<u64>,
+    ),
+    Hfs3Error,
+> {
+    let url = download_url_with_base(base_url, repo, file_path);
 
     let mut req = client.get(&url);
     if let Some(t) = token {
@@ -166,12 +201,9 @@ pub async fn download_file_stream(
 
     let resp = req.send().await?;
 
-    if !resp.status().is_success() {
-        return Err(Hfs3Error::HfApi(format!(
-            "GET {} returned {}",
-            url,
-            resp.status()
-        )));
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(hf_http_error(status, &url, repo));
     }
 
     let content_length = resp.content_length();
@@ -212,7 +244,7 @@ mod tests {
     fn test_api_url_model() {
         let repo = model_repo();
         assert_eq!(
-            api_url(&repo),
+            api_url_with_base(HF_BASE, &repo),
             "https://huggingface.co/api/models/meta-llama/Llama-2-7b/tree/main?recursive=true"
         );
     }
@@ -221,7 +253,7 @@ mod tests {
     fn test_api_url_dataset() {
         let repo = dataset_repo();
         assert_eq!(
-            api_url(&repo),
+            api_url_with_base(HF_BASE, &repo),
             "https://huggingface.co/api/datasets/user/my-dataset/tree/main?recursive=true"
         );
     }
@@ -230,7 +262,7 @@ mod tests {
     fn test_download_url_model() {
         let repo = model_repo();
         assert_eq!(
-            download_url(&repo, "config.json"),
+            download_url_with_base(HF_BASE, &repo, "config.json"),
             "https://huggingface.co/meta-llama/Llama-2-7b/resolve/main/config.json"
         );
     }
@@ -239,7 +271,7 @@ mod tests {
     fn test_download_url_space() {
         let repo = space_repo();
         assert_eq!(
-            download_url(&repo, "app.py"),
+            download_url_with_base(HF_BASE, &repo, "app.py"),
             "https://huggingface.co/spaces/user/my-space/resolve/v2/app.py"
         );
     }
@@ -430,6 +462,137 @@ mod tests {
                     .unwrap();
 
             assert_eq!(result, RepoType::Model);
+        }
+    }
+
+    mod error_messages {
+        use super::*;
+        use wiremock::matchers::path_regex;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const LIST_PATH: &str = r"/api/models/.+";
+        const DL_PATH: &str = r"/.+/resolve/main/config.json";
+
+        #[tokio::test]
+        async fn test_list_401_suggests_token_and_type_prefix() {
+            let server = MockServer::start().await;
+            Mock::given(path_regex(LIST_PATH))
+                .respond_with(ResponseTemplate::new(401))
+                .mount(&server)
+                .await;
+
+            let client = Client::new();
+            let err = list_repo_files_with_base(&client, &server.uri(), &model_repo(), None)
+                .await
+                .unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("HF_TOKEN"), "got: {msg}");
+            assert!(msg.contains("401"), "got: {msg}");
+            assert!(msg.contains("datasets/"), "got: {msg}");
+            assert!(msg.contains("meta-llama/Llama-2-7b"), "got: {msg}");
+        }
+
+        #[tokio::test]
+        async fn test_list_403_suggests_token() {
+            let server = MockServer::start().await;
+            Mock::given(path_regex(LIST_PATH))
+                .respond_with(ResponseTemplate::new(403))
+                .mount(&server)
+                .await;
+
+            let client = Client::new();
+            let err = list_repo_files_with_base(&client, &server.uri(), &model_repo(), Some("tok"))
+                .await
+                .unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("403"), "got: {msg}");
+            assert!(msg.contains("HF_TOKEN"), "got: {msg}");
+        }
+
+        #[tokio::test]
+        async fn test_list_404_reports_not_found() {
+            let server = MockServer::start().await;
+            Mock::given(path_regex(LIST_PATH))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&server)
+                .await;
+
+            let client = Client::new();
+            let err = list_repo_files_with_base(&client, &server.uri(), &model_repo(), None)
+                .await
+                .unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("not found"), "got: {msg}");
+            assert!(msg.contains("meta-llama/Llama-2-7b"), "got: {msg}");
+            assert!(!msg.contains("HF_TOKEN"), "got: {msg}");
+        }
+
+        #[tokio::test]
+        async fn test_list_500_keeps_status_text() {
+            let server = MockServer::start().await;
+            Mock::given(path_regex(LIST_PATH))
+                .respond_with(ResponseTemplate::new(500))
+                .mount(&server)
+                .await;
+
+            let client = Client::new();
+            let err = list_repo_files_with_base(&client, &server.uri(), &model_repo(), None)
+                .await
+                .unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("500"), "got: {msg}");
+            assert!(!msg.contains("HF_TOKEN"), "got: {msg}");
+        }
+
+        #[tokio::test]
+        async fn test_download_401_suggests_token() {
+            let server = MockServer::start().await;
+            Mock::given(path_regex(DL_PATH))
+                .respond_with(ResponseTemplate::new(401))
+                .mount(&server)
+                .await;
+
+            let client = Client::new();
+            let err = match download_file_stream_with_base(
+                &client,
+                &server.uri(),
+                &model_repo(),
+                "config.json",
+                None,
+            )
+            .await
+            {
+                Err(e) => e,
+                Ok(_) => panic!("expected error"),
+            };
+            let msg = err.to_string();
+            assert!(msg.contains("401"), "got: {msg}");
+            assert!(msg.contains("HF_TOKEN"), "got: {msg}");
+        }
+
+        #[tokio::test]
+        async fn test_download_404_reports_not_found() {
+            let server = MockServer::start().await;
+            Mock::given(path_regex(DL_PATH))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&server)
+                .await;
+
+            let client = Client::new();
+            let err = match download_file_stream_with_base(
+                &client,
+                &server.uri(),
+                &model_repo(),
+                "config.json",
+                None,
+            )
+            .await
+            {
+                Err(e) => e,
+                Ok(_) => panic!("expected error"),
+            };
+            let msg = err.to_string();
+            assert!(msg.contains("not found"), "got: {msg}");
         }
     }
 }
