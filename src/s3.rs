@@ -8,7 +8,7 @@ use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use aws_sdk_s3::Client as S3Client;
 use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinSet;
 
@@ -16,6 +16,29 @@ use crate::error::Hfs3Error;
 
 // Re-export chunk functions so consumers can use them via s3 module.
 pub use crate::concurrency::{chunk_size_for_file, chunk_size_for_transfer};
+
+/// Join a relative key path to the destination directory, rejecting any
+/// path that would escape it (absolute paths, `..` components).
+pub fn safe_join(dest_dir: &Path, relative: &str) -> Result<PathBuf, Hfs3Error> {
+    let rel = Path::new(relative);
+    if rel.is_absolute() {
+        return Err(Hfs3Error::S3(format!(
+            "refusing unsafe key path (absolute): {relative}"
+        )));
+    }
+    if rel.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(Hfs3Error::S3(format!(
+            "refusing unsafe key path (contains ..): {relative}"
+        )));
+    }
+    let joined = dest_dir.join(rel);
+    if !joined.starts_with(dest_dir) {
+        return Err(Hfs3Error::S3(format!(
+            "refusing unsafe key path (escapes destination): {relative}"
+        )));
+    }
+    Ok(joined)
+}
 
 /// Parameters controlling how a file is uploaded to S3.
 #[derive(Debug, Clone)]
@@ -408,6 +431,8 @@ impl S3Ops {
 
     /// Download an object from S3 to a local file.
     ///
+    /// Writes to a `<dest>.hfs3-tmp` file and renames it into place, so a
+    /// failed download never leaves a partial file at the destination.
     /// Creates parent directories if needed. Returns bytes written.
     pub async fn download_to_file(
         &self,
@@ -420,29 +445,50 @@ impl S3Ops {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let resp = self
-            .client
-            .get_object()
-            .bucket(bucket)
-            .key(key)
-            .send()
-            .await
-            .map_err(|e| Hfs3Error::S3(format!("get_object failed for {key}: {e}")))?;
+        let file_name = dest
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "download".to_string());
+        let tmp_path = dest.with_file_name(format!("{file_name}.hfs3-tmp"));
 
-        let mut body = resp.body.into_async_read();
-        let mut file = tokio::fs::File::create(dest).await?;
-        let bytes_written = tokio::io::copy(&mut body, &mut file).await?;
-        file.flush().await?;
+        let write_result: Result<u64, Hfs3Error> = async {
+            let resp = self
+                .client
+                .get_object()
+                .bucket(bucket)
+                .key(key)
+                .send()
+                .await
+                .map_err(|e| Hfs3Error::S3(format!("get_object failed for {key}: {e}")))?;
 
-        tracing::info!(
-            bucket,
-            key,
-            dest = %dest.display(),
-            bytes = bytes_written,
-            "downloaded to file"
-        );
+            let mut body = resp.body.into_async_read();
+            let mut file = tokio::fs::File::create(&tmp_path).await?;
+            let bytes_written = tokio::io::copy(&mut body, &mut file).await?;
+            file.flush().await?;
+            Ok(bytes_written)
+        }
+        .await;
 
-        Ok(bytes_written)
+        match write_result {
+            Ok(bytes_written) => {
+                if let Err(e) = tokio::fs::rename(&tmp_path, dest).await {
+                    let _ = tokio::fs::remove_file(&tmp_path).await;
+                    return Err(Hfs3Error::Io(e));
+                }
+                tracing::info!(
+                    bucket,
+                    key,
+                    dest = %dest.display(),
+                    bytes = bytes_written,
+                    "downloaded to file"
+                );
+                Ok(bytes_written)
+            }
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                Err(e)
+            }
+        }
     }
 
     /// List all objects under a prefix, handling pagination.
@@ -515,7 +561,7 @@ impl S3Ops {
                 continue;
             }
 
-            let dest_path = dest_dir.join(relative);
+            let dest_path = safe_join(dest_dir, relative)?;
             let bytes = self.download_to_file(bucket, key, &dest_path).await?;
             total_bytes += bytes;
             files_downloaded += 1;
@@ -589,5 +635,43 @@ mod tests {
     #[test]
     fn test_chunk_size_very_large_file() {
         assert_eq!(chunk_size_for_file(100 * GB), 128 * MB);
+    }
+
+    #[test]
+    fn test_safe_join_nest() {
+        let path =
+            safe_join(Path::new("/data/repo"), "onnx/model.onnx").expect("nested path is safe");
+        assert_eq!(path, Path::new("/data/repo/onnx/model.onnx"));
+    }
+
+    #[test]
+    fn test_safe_join_top_level() {
+        let path =
+            safe_join(Path::new("/data/repo"), "config.json").expect("top-level path is safe");
+        assert_eq!(path, Path::new("/data/repo/config.json"));
+    }
+
+    #[test]
+    fn test_safe_join_rejects_absolute() {
+        let err = safe_join(Path::new("/data/repo"), "/etc/passwd").unwrap_err();
+        assert!(err.to_string().contains("absolute"));
+    }
+
+    #[test]
+    fn test_safe_join_rejects_parent_traversal() {
+        let err = safe_join(Path::new("/data/repo"), "a/../../evil.sh").unwrap_err();
+        assert!(err.to_string().contains(".."));
+    }
+
+    #[test]
+    fn test_safe_join_rejects_bare_parent() {
+        let err = safe_join(Path::new("/data/repo"), "..").unwrap_err();
+        assert!(err.to_string().contains(".."));
+    }
+
+    #[test]
+    fn test_safe_join_rejects_leading_parent() {
+        let err = safe_join(Path::new("/data/repo"), "../repo2/evil.sh").unwrap_err();
+        assert!(err.to_string().contains(".."));
     }
 }
