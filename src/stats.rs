@@ -157,9 +157,9 @@ impl TransferStats {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Sample current process RSS from /proc/self/status.
-    pub fn sample_memory(&self) {
-        if let Some(rss) = process_rss_bytes() {
+    /// Sample current process RSS from /proc/self/status (non-blocking).
+    pub async fn sample_memory(&self) {
+        if let Some(rss) = process_rss_bytes().await {
             if let Ok(mut samples) = self.rss_samples.lock() {
                 samples.push(rss);
             }
@@ -313,8 +313,8 @@ pub fn estimate_total_chunks(files: &[(String, u64)], available_memory: u64) -> 
 
 /// Read VmRSS (resident set size) from /proc/self/status.
 /// Returns bytes, or None if unavailable.
-pub fn process_rss_bytes() -> Option<u64> {
-    let contents = std::fs::read_to_string("/proc/self/status").ok()?;
+pub async fn process_rss_bytes() -> Option<u64> {
+    let contents = tokio::fs::read_to_string("/proc/self/status").await.ok()?;
     for line in contents.lines() {
         if line.starts_with("VmRSS:") {
             let parts: Vec<&str> = line.split_whitespace().collect();
@@ -422,7 +422,7 @@ pub fn spawn_progress_reporter(
         loop {
             tokio::time::sleep(interval).await;
 
-            stats.sample_memory();
+            stats.sample_memory().await;
             let snap = stats.snapshot();
 
             // Update main bar
@@ -709,9 +709,9 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[test]
-    fn test_process_rss_bytes() {
-        let rss = process_rss_bytes();
+    #[tokio::test]
+    async fn test_process_rss_bytes() {
+        let rss = process_rss_bytes().await;
         assert!(rss.is_some(), "/proc/self/status should be readable");
         let rss = rss.unwrap();
         assert!(rss > 0, "RSS should be positive");

@@ -548,7 +548,9 @@ impl S3Ops {
         dest_dir: &Path,
     ) -> Result<(usize, u64), Hfs3Error> {
         let objects = self.list_objects(bucket, prefix).await?;
+        let mut files_downloaded: usize = 0;
         let mut files_skipped: usize = 0;
+        let mut total_bytes: u64 = 0;
 
         // Normalize prefix for stripping (ensure trailing slash)
         let strip_prefix = if prefix.ends_with('/') {
@@ -558,7 +560,7 @@ impl S3Ops {
         };
 
         let plan_files: Vec<(&str, u64)> = objects.iter().map(|(k, s)| (k.as_str(), *s)).collect();
-        let plan = match plan_transfer(&plan_files) {
+        let plan = match plan_transfer(&plan_files).await {
             Ok(p) => p,
             Err(_) => plan_transfer_with_memory(&plan_files, 4 * 1024 * 1024 * 1024),
         };
@@ -603,9 +605,6 @@ impl S3Ops {
                 s3.download_to_file(&bucket, &key, &dest_path).await
             });
         }
-
-        let mut files_downloaded: usize = 0;
-        let mut total_bytes: u64 = 0;
 
         while let Some(result) = join_set.join_next().await {
             let bytes = match result {

@@ -89,10 +89,12 @@ pub fn calculate_max_parts(
     (parts as usize).clamp(1, 8)
 }
 
-/// Read MemAvailable from /proc/meminfo.
+/// Read MemAvailable from /proc/meminfo (non-blocking).
 /// Returns bytes (the file reports kB, multiply by 1024).
-pub fn available_memory_bytes() -> Result<u64, Hfs3Error> {
-    let contents = std::fs::read_to_string("/proc/meminfo").map_err(Hfs3Error::Io)?;
+pub async fn available_memory_bytes() -> Result<u64, Hfs3Error> {
+    let contents = tokio::fs::read_to_string("/proc/meminfo")
+        .await
+        .map_err(Hfs3Error::Io)?;
 
     for line in contents.lines() {
         if line.starts_with("MemAvailable:") {
@@ -137,8 +139,8 @@ pub fn calculate_max_concurrency(chunk_size: usize, available_memory: u64) -> us
 ///
 /// Uses the largest file to determine chunk size (conservative),
 /// then computes concurrency from available RAM.
-pub fn plan_transfer(files: &[(&str, u64)]) -> Result<TransferPlan, Hfs3Error> {
-    let available = available_memory_bytes()?;
+pub async fn plan_transfer(files: &[(&str, u64)]) -> Result<TransferPlan, Hfs3Error> {
+    let available = available_memory_bytes().await?;
     let max_file_size = files.iter().map(|(_, s)| *s).max().unwrap_or(0);
     let chunk_size = chunk_size_for_transfer(max_file_size, available);
     let max_concurrent = calculate_max_concurrency(chunk_size, available);
@@ -263,10 +265,10 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[test]
-    fn test_available_memory_bytes_reads_procfs() {
+    #[tokio::test]
+    async fn test_available_memory_bytes_reads_procfs() {
         // On Linux, /proc/meminfo should exist and return > 0
-        let mem = available_memory_bytes().unwrap();
+        let mem = available_memory_bytes().await.unwrap();
         assert!(mem > 0, "MemAvailable should be positive");
         // Sanity: should be less than 1 TB
         assert!(mem < 1024 * 1024 * 1024 * 1024);

@@ -103,7 +103,7 @@ pub async fn mirror_repo(config: &AppConfig, repo: &RepoRef) -> Result<MirrorRes
 
     // Compute transfer plan with memory-aware concurrency
     let file_refs: Vec<(&str, u64)> = files.iter().map(|f| (f.path.as_str(), f.size)).collect();
-    let plan = match plan_transfer(&file_refs) {
+    let plan = match plan_transfer(&file_refs).await {
         Ok(p) => p,
         Err(_) => {
             // Fallback: if /proc/meminfo is unavailable, assume 4 GB available
