@@ -548,6 +548,7 @@ impl S3Ops {
         dest_dir: &Path,
     ) -> Result<(usize, u64), Hfs3Error> {
         let objects = self.list_objects(bucket, prefix).await?;
+        let mut files_skipped: usize = 0;
 
         // Normalize prefix for stripping (ensure trailing slash)
         let strip_prefix = if prefix.ends_with('/') {
@@ -573,7 +574,7 @@ impl S3Ops {
         let semaphore = Arc::new(Semaphore::new(max_concurrent));
         let mut join_set = JoinSet::new();
 
-        for (key, _size) in &objects {
+        for (key, size) in &objects {
             // Strip the prefix to get relative path
             let relative = key.strip_prefix(&strip_prefix).unwrap_or(key);
 
@@ -582,6 +583,15 @@ impl S3Ops {
             }
 
             let dest_path = safe_join(dest_dir, relative)?;
+
+            // Skip files that are already downloaded with a matching size
+            if let Ok(meta) = tokio::fs::metadata(&dest_path).await {
+                if meta.is_file() && meta.len() == *size {
+                    files_skipped += 1;
+                    tracing::info!(key, "skipping existing file (size match)");
+                    continue;
+                }
+            }
 
             let s3 = self.clone();
             let bucket = bucket.to_string();
@@ -615,10 +625,15 @@ impl S3Ops {
             bucket,
             prefix,
             files = files_downloaded,
+            skipped = files_skipped,
             bytes = total_bytes,
             dest = %dest_dir.display(),
             "download_all complete"
         );
+
+        if files_skipped > 0 {
+            eprintln!("Skipped {files_skipped} existing file(s) with matching size");
+        }
 
         Ok((files_downloaded, total_bytes))
     }

@@ -102,13 +102,25 @@ async fn cmd_run(repo_str: &str, dest: &Path, port: u16, force: bool) -> Result<
     let repo = parse_repo_url(repo_str)?;
     let config = AppConfig::from_env()?;
 
-    // Pull from S3 if dest doesn't exist or force is set
-    if !dest.exists() || force {
+    // Skip the pull only if the destination already holds a populated
+    // directory; an empty leftover from a failed pull must be re-pulled.
+    let dest_is_populated = match tokio::fs::read_dir(dest).await {
+        Ok(mut entries) => entries.next_entry().await?.is_some(),
+        Err(_) => false,
+    };
+
+    if force || !dest_is_populated {
+        if dest.exists() && !dest_is_populated && !force {
+            eprintln!(
+                "warning: destination {} exists but is empty, pulling",
+                dest.display()
+            );
+        }
         eprintln!("Pulling repo to {} ...", dest.display());
         pipeline::pull_repo(&config, &repo, dest).await?;
     } else {
         eprintln!(
-            "Destination {} already exists, skipping pull (use --force to re-pull)",
+            "Destination {} already populated, skipping pull (use --force to re-pull)",
             dest.display()
         );
     }
