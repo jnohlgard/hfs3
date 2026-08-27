@@ -46,11 +46,12 @@ Rust modules in `src/`, each independently testable:
 ## Testing conventions
 
 - Unit tests in each module with `#[cfg(test)]` + `#[tokio::test]`
-- S3 tests will use localstack or mock clients
-- HF API tests mock HTTP responses
+- HF API tests mock HTTP responses with wiremock
+- No mock S3 clients: `s3.rs` unit tests cover pure logic (chunk sizing, key building, path safety); real S3 is covered by `just e2e` (mirror -> pull -> per-file sha256 compare against a reachable endpoint; `just s3-up` starts a throwaway MinIO, or point `S3_ENDPOINT` at your own bucket)
+- `tests/smoke.rs` exercises the real binary via `CARGO_BIN_EXE_hfs3` (CLI parsing, exit codes)
 - Docker tests check preconditions only; no real Docker calls in tests
 - All modules take dependencies as explicit arguments for testability
-- `tests/` directory contains the original Python behavioral spec (pytest) for reference
+- `tests/*.py` hold the original Python behavioral spec, kept for reference (not run)
 
 ## Tooling
 

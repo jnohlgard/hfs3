@@ -9,7 +9,7 @@ project:
     Single binary with three subcommands: mirror, pull, run.
     Streaming architecture — zero-copy pipe from HF REST API to S3 multipart upload.
     Memory-aware concurrency based on /proc/meminfo.
-  repo: /home/berthadev/hfs3
+  repo: .
   binary_name: hfs3
 
 scope:
@@ -23,11 +23,12 @@ scope:
     - Docker build+run for pulled repos
     - JSON summary to stdout, human progress to stderr
     - Devcontainer with Rust toolchain
-    - GitHub Actions CI with cross-compiled releases
+    - GitHub Actions CI
   out:
     - Auth / multi-user
     - Web UI
     - Windows support
+    - Cross-compiled release builds (cross/cargo-zigbuild)
     - Caching / incremental sync
     - HF private repo support beyond token auth
     - S3 server-side encryption configuration

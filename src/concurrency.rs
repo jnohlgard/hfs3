@@ -12,6 +12,9 @@ use crate::error::Hfs3Error;
 const MB: usize = 1024 * 1024;
 const GB: u64 = 1024 * 1024 * 1024;
 
+/// Threshold below which we use put_object instead of multipart upload.
+pub const PUT_OBJECT_THRESHOLD: u64 = 8 * 1024 * 1024; // 8 MB
+
 /// Transfer plan computed from file sizes and available system memory.
 #[derive(Debug, Clone)]
 pub struct TransferPlan {

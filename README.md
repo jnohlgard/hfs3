@@ -125,6 +125,11 @@ Example: `s3://my-bucket/hfs3-mirror/model/meta-llama--Llama-2-7b/config.json`
 
 Files under 8 MB skip multipart and use a single `PutObject`.
 
+## Known Limitations
+
+- **Xet repos**: work via plain `/resolve/` URLs, but hfs3 does not use Xet's chunked-CAS protocol or resumable downloads. Very large Xet-hosted files are downloaded as plain HTTP streams.
+- **Custom S3 endpoints** (`HFS3_S3_ENDPOINT`): always use path-style addressing (`endpoint/bucket/key`). Endpoints that require virtual-host style (`bucket.endpoint`) are not supported.
+
 ## Development
 
 Requires a devcontainer (Rust toolchain, just, awscli). All `just` recipes run inside the container automatically:

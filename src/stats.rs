@@ -17,7 +17,7 @@ use futures::Stream;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::Serialize;
 
-use crate::concurrency::{chunk_size_for_file, chunk_size_for_transfer};
+use crate::concurrency::{chunk_size_for_file, chunk_size_for_transfer, PUT_OBJECT_THRESHOLD};
 
 // --- File state constants ---
 const FILE_PENDING: usize = 0;
@@ -284,8 +284,6 @@ pub struct TransferStatsReport {
 
 // --- Chunk estimation ---
 
-const PUT_THRESHOLD: u64 = 8 * 1024 * 1024;
-
 /// Estimate total S3 parts across all files.
 ///
 /// Files below the put_object threshold count as 1 chunk.
@@ -295,7 +293,7 @@ pub fn estimate_total_chunks(files: &[(String, u64)], available_memory: u64) -> 
     files
         .iter()
         .map(|(_, size)| {
-            if *size < PUT_THRESHOLD {
+            if *size < PUT_OBJECT_THRESHOLD {
                 1
             } else {
                 let cs = if available_memory > 0 {

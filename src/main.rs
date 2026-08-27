@@ -1,6 +1,6 @@
 //! hfs3 binary entrypoint.
 //! All logic lives in the library crate (src/lib.rs).
-//! CLI wiring is in src/cli.rs (implemented by agent A8).
+//! CLI wiring is in src/cli.rs.
 
 #[tokio::main]
 async fn main() {

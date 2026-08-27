@@ -10,7 +10,7 @@ Before proposing ANY change, suggestion, or architecture decision:
 
 NEVER reason from the local/mock happy path and assume it generalizes to production.
 
-Example: the flywheel agent submits an AWS Batch job and exits. Training runs async on a remote GPU. Metrics are pushed from the Batch container. The dashboard collects independently. These are all separate lifecycles — do not couple them.
+Example: `hfs3 mirror` streams files from HuggingFace into an S3 multipart upload and then exits. The bucket outlives the process. `hfs3 pull` re-downloads from it later, on another machine, in a separate run. These are separate lifecycles — do not couple them.
 
 ## No Empty Promises
 

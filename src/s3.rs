@@ -14,11 +14,13 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use crate::concurrency::{plan_transfer, plan_transfer_with_memory};
 use crate::error::Hfs3Error;
 
 // Re-export chunk functions so consumers can use them via s3 module.
-pub use crate::concurrency::{chunk_size_for_file, chunk_size_for_transfer};
+pub use crate::concurrency::{
+    chunk_size_for_file, chunk_size_for_transfer, plan_transfer, plan_transfer_with_memory,
+    PUT_OBJECT_THRESHOLD,
+};
 
 /// Join a relative key path to the destination directory, rejecting any
 /// path that would escape it (absolute paths, `..` components).
@@ -61,9 +63,6 @@ impl UploadParams {
         }
     }
 }
-
-/// Threshold below which we use put_object instead of multipart upload.
-const PUT_OBJECT_THRESHOLD: u64 = 8 * 1024 * 1024; // 8 MB
 
 /// S3 operations wrapper around aws-sdk-s3 client.
 #[derive(Clone)]
